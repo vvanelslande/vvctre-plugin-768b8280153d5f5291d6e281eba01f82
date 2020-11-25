@@ -1,0 +1,86 @@
+name: Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      mention:
+        required: true
+      code_file_name:
+        required: true
+      type:
+        required: true
+
+jobs:
+  make_plugin:
+    name: ${{matrix.name}}
+    runs-on: ${{matrix.os}}
+    strategy:
+      matrix:
+        os: [windows-2019, ubuntu-18.04]
+        include:
+          - os: windows-2019
+            name: windows
+          - os: ubuntu-18.04
+            name: linux
+    steps:
+      - uses: actions/checkout@v2
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Build
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            cl.exe //LD //Fe:${{github.event.inputs.type}}.dll ${{github.event.inputs.code_file_name}}
+          else
+            gcc ${{github.event.inputs.code_file_name}} -shared -o ${{github.event.inputs.type}}.so
+          fi
+      - name: Prepare to upload artifact
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          mkdir artifact
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            cp ${{github.event.inputs.type}}.dll artifact/
+          else
+            cp ${{github.event.inputs.type}}.so artifact/
+          fi
+          cp ${{github.event.inputs.code_file_name}} artifact/
+          cp license.txt artifact/
+      - name: Upload artifact
+        uses: actions/upload-artifact@v1
+        with:
+          name: ${{matrix.name}}
+          path: artifact
+  success:
+    needs: make_plugin
+    runs-on: ubuntu-18.04
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/download-artifact@v2
+      - name: Create 7z and zip files
+        run: |
+          cd windows
+          7z a vvctre-plugin-${{github.event.inputs.type}}-windows.7z ${{github.event.inputs.type}}.dll license.txt
+          7z a vvctre-plugin-${{github.event.inputs.type}}-windows.zip ${{github.event.inputs.type}}.dll license.txt
+
+          cd ../linux
+          7z a vvctre-plugin-${{github.event.inputs.type}}-linux.7z ${{github.event.inputs.type}}.so license.txt
+          7z a vvctre-plugin-${{github.event.inputs.type}}-linux.zip ${{github.event.inputs.type}}.so license.txt
+      - run: |
+          curl \
+            -F "payload_json={\"content\":\"${{github.event.inputs.mention}}\"}" \
+            -F "windows_7z=@windows/vvctre-plugin-${{github.event.inputs.type}}-windows.7z" \
+            -F "windows_zip=@windows/vvctre-plugin-${{github.event.inputs.type}}-windows.zip" \
+            -F "linux_7z=@linux/vvctre-plugin-${{github.event.inputs.type}}-linux.7z" \
+            -F "linux_zip=@linux/vvctre-plugin-${{github.event.inputs.type}}-linux.zip" \
+            ${{secrets.DISCORD_WEBHOOK}}
+  failure:
+    if: failure()
+    runs-on: ubuntu-18.04
+    needs: make_plugin
+    steps:
+      - run: |
+          curl \
+            -H "Content-Type: application/json" \
+            --data "{\"content\":\"${{github.event.inputs.mention}}, a error occurred when making your plugin\"}" \
+            ${{secrets.DISCORD_WEBHOOK}}
